@@ -160,6 +160,10 @@ void build_finger_table() {
      *   - inelul este static, deci finger table-ul este static
      *   - este parte OBLIGATORIE a temei
      ******************************************************/
+    for (int i = 0; i < M; i++) {
+        self.finger[i].start = (self.id + (1 << i))  % RING_SIZE;
+        self.finger[i].node = find_successor_simple(self.finger[i].start);
+    }
 
 }
 
@@ -184,6 +188,11 @@ int closest_preceding_finger(int key) {
     /******************************************************
      * TODO 2 - de implementat de voi
      ******************************************************/
+    for (int i = M - 1; i >= 0; i--) {
+        if (in_interval(self.finger[i].node, self.id, key)) {
+            return self.finger[i].node;
+        }
+    }
 
     return self.successor;   // fallback
 }
@@ -207,6 +216,25 @@ void handle_lookup_request(LookupMsg *msg) {
     /******************************************************
      * TODO 3 – de implementat de voi
      ******************************************************/
+    //Nu sunt prea sigur de linia asta
+    // msg->current_id = self.id;
+    
+    msg->path[msg->path_len] = self.id;
+    msg->path_len++;
+
+    if (in_interval(msg->key, self.id, self.successor)) {
+        msg->path[msg->path_len] = self.successor;
+        msg->path_len++;
+        //trimite TAG_LOOKUP_REP
+        MPI_Send(msg, sizeof(LookupMsg), MPI_BYTE, 
+                 rank_from_id(msg->initiator_id), TAG_LOOKUP_REP, MPI_COMM_WORLD);
+    } else {
+        //trimite TAG_LOOKUP_REQ  
+        int next = closest_preceding_finger(msg->key);
+        MPI_Send(msg, sizeof(LookupMsg), MPI_BYTE,
+                 rank_from_id(next), TAG_LOOKUP_REQ, MPI_COMM_WORLD);
+    }
+
 }
 
 int main(int argc, char **argv) {
@@ -255,7 +283,15 @@ int main(int argc, char **argv) {
      *       - construiți LookupMsg
      *       - trimiteți un mesaj de tip TAG_LOOKUP_REQ către propriul rank
      ************************************************************/
-
+    for(int i = 0; i < nr_lookups; i++) {
+        LookupMsg *msg = malloc(sizeof(LookupMsg));
+        msg->current_id = self.id;
+        msg->initiator_id = self.id;
+        msg->key = lookups[i];
+        msg->path_len = 0;
+        MPI_Send(msg, sizeof(LookupMsg), MPI_BYTE,
+                 rank_from_id(self.id), TAG_LOOKUP_REQ, MPI_COMM_WORLD);
+    }
     free(lookups);
 
     /************************************************************
@@ -268,6 +304,50 @@ int main(int argc, char **argv) {
      *       - trimiteți TAG_DONE tuturor când ați terminat
      *       - opriți loop-ul doar când primiți DONE de la toate nodurile
      ************************************************************/
+    int *done = calloc(world_size, sizeof(int));
+    int done_count = 0;
+    int lookups_found = 0;
+    while (done_count < num_nodes) {
+        for (int i = 0; i < num_nodes; i++) {
+            LookupMsg *msg;
+            MPI_Status status;
+            int tag;
+            MPI_Recv(/*data, count, datatype, source, tag, COMM, STATUS*/);
+            MPI_Recv(msg, sizeof(LookupMsg), MPI_BYTE, i,
+                     tag, MPI_COMM_WORLD, status);
+            switch (tag) {
+            case TAG_LOOKUP_REQ:
+                handle_lookup_request(msg);
+                break;
+            case TAG_LOOKUP_REP:
+                lookups_found++;
+                if (lookups_found == nr_lookups) {
+                    for (int i = 0; i < num_nodes; i++) {
+                        MPI_Send(null, 0, MPI_BYTE, i, TAG_DONE, MPI_COMM_WORLD);
+                    }
+                }
+                printf("Lookup %d: %d", msg->key, msg->path[0]);
+                for (int i = 1; i < msg->path_len; i++) {
+                    printf(" -> %d", msg->path[i]);
+                }
+                printf("\n");
+                break;
+            case TAG_DONE:
+                if (!done[i]) {
+                // Poate e redundant sa verific !done[i], 
+                //din moment ce nu voi trimite de mai multe ori done din acelasi nod
+                //dar ca sa fiu sigur
+                    done[i] = 1;
+                    done_count++;
+                }
+                break;
+            default:
+                //error
+                printf("Oh nu, rank-ul %d a trimis un tag necunoscut(%d)\n", i, tag);
+            }
+
+        }
+    }
 
     MPI_Finalize();
     return 0;
