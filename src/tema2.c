@@ -189,7 +189,7 @@ int closest_preceding_finger(int key) {
      * TODO 2 - de implementat de voi
      ******************************************************/
     for (int i = M - 1; i >= 0; i--) {
-        if (in_interval(self.finger[i].node, self.id, key)) {
+        if (in_interval(self.finger[i].node, self.id, key) && self.finger[i].node != key) {
             return self.finger[i].node;
         }
     }
@@ -221,7 +221,10 @@ void handle_lookup_request(LookupMsg *msg) {
     
     msg->path[msg->path_len] = self.id;
     msg->path_len++;
-
+    if(msg->path_len >= MAX_PATH) {
+        //error
+        return;
+    }
     if (in_interval(msg->key, self.id, self.successor)) {
         msg->path[msg->path_len] = self.successor;
         msg->path_len++;
@@ -284,13 +287,13 @@ int main(int argc, char **argv) {
      *       - trimiteți un mesaj de tip TAG_LOOKUP_REQ către propriul rank
      ************************************************************/
     for(int i = 0; i < nr_lookups; i++) {
-        LookupMsg *msg = malloc(sizeof(LookupMsg));
-        msg->current_id = self.id;
-        msg->initiator_id = self.id;
-        msg->key = lookups[i];
-        msg->path_len = 0;
-        MPI_Send(msg, sizeof(LookupMsg), MPI_BYTE,
-                 rank_from_id(self.id), TAG_LOOKUP_REQ, MPI_COMM_WORLD);
+        LookupMsg msg;
+        msg.current_id = self.id;
+        msg.initiator_id = self.id;
+        msg.key = lookups[i];
+        msg.path_len = 0;
+        MPI_Send(&msg, sizeof(LookupMsg), MPI_BYTE,
+                 world_rank, TAG_LOOKUP_REQ, MPI_COMM_WORLD);
     }
     free(lookups);
 
@@ -304,48 +307,53 @@ int main(int argc, char **argv) {
      *       - trimiteți TAG_DONE tuturor când ați terminat
      *       - opriți loop-ul doar când primiți DONE de la toate nodurile
      ************************************************************/
-    int *done = calloc(world_size, sizeof(int));
     int done_count = 0;
     int lookups_found = 0;
-    while (done_count < num_nodes) {
-        for (int i = 0; i < num_nodes; i++) {
-            LookupMsg *msg;
-            MPI_Status status;
-            int tag;
-            MPI_Recv(/*data, count, datatype, source, tag, COMM, STATUS*/);
-            MPI_Recv(msg, sizeof(LookupMsg), MPI_BYTE, i,
-                     tag, MPI_COMM_WORLD, status);
-            switch (tag) {
-            case TAG_LOOKUP_REQ:
-                handle_lookup_request(msg);
-                break;
-            case TAG_LOOKUP_REP:
-                lookups_found++;
-                if (lookups_found == nr_lookups) {
-                    for (int i = 0; i < num_nodes; i++) {
-                        MPI_Send(null, 0, MPI_BYTE, i, TAG_DONE, MPI_COMM_WORLD);
-                    }
-                }
-                printf("Lookup %d: %d", msg->key, msg->path[0]);
-                for (int i = 1; i < msg->path_len; i++) {
-                    printf(" -> %d", msg->path[i]);
-                }
-                printf("\n");
-                break;
-            case TAG_DONE:
-                if (!done[i]) {
-                // Poate e redundant sa verific !done[i], 
-                //din moment ce nu voi trimite de mai multe ori done din acelasi nod
-                //dar ca sa fiu sigur
-                    done[i] = 1;
-                    done_count++;
-                }
-                break;
-            default:
-                //error
-                printf("Oh nu, rank-ul %d a trimis un tag necunoscut(%d)\n", i, tag);
-            }
+    int done = 0;
 
+    if (nr_lookups == 0) {
+        for (int i = 0; i < world_size; i++) {
+            if (i == world_rank) {
+                continue;
+            }
+            LookupMsg msg;
+            MPI_Send(&msg, sizeof(LookupMsg), MPI_BYTE, i, TAG_DONE, MPI_COMM_WORLD);
+        }
+        done = 1;
+    }
+
+    while (done_count < world_size - 1 || !done) {
+        LookupMsg msg;
+        MPI_Status status;
+        MPI_Recv(&msg, sizeof(LookupMsg), MPI_BYTE, MPI_ANY_SOURCE,
+                    MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+
+        switch (status.MPI_TAG) {
+        case TAG_LOOKUP_REQ:
+            handle_lookup_request(&msg);
+            break;
+
+        case TAG_LOOKUP_REP:
+            lookups_found++;
+            if (lookups_found == nr_lookups && !done) {
+                for (int i = 0; i < world_size; i++) {
+                    if (i == world_rank) {
+                        continue;
+                    }
+                    MPI_Send(&msg, sizeof(LookupMsg), MPI_BYTE, i, TAG_DONE, MPI_COMM_WORLD);
+                }
+                done = 1;
+            }
+            printf("Lookup %d: %d", msg.key, msg.path[0]);
+            for (int i = 1; i < msg.path_len; i++) {
+                printf(" -> %d", msg.path[i]);
+            }
+            printf("\n");
+            fflush(stdout);
+            break;
+
+        case TAG_DONE:
+            done_count++;
         }
     }
 
