@@ -1,4 +1,4 @@
-# Tema 2 APD 2025key
+# Tema 2 APD 2025
 
 Am implementat versiunea statica a protocolului CHORD, dupa cerinta. Astfel, am urmat urmatorii pasi:
 
